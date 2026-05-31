@@ -19,10 +19,6 @@ from app.models.plan import Plan, BillingInterval
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-ADMIN_EMAIL = "admin@example.com"
-ADMIN_PASSWORD = "admin123"  # короткий пароль — точно влезет в 72 байта bcrypt
-
-
 def make_hash(password: str) -> str:
     """Hash password using bcrypt directly to avoid passlib version issues."""
     import bcrypt
@@ -30,23 +26,30 @@ def make_hash(password: str) -> str:
 
 
 async def seed_db():
+    # Read credentials from settings so they stay in sync with .env
+    admin_email    = settings.FIRST_SUPERUSER_EMAIL
+    admin_password = settings.FIRST_SUPERUSER_PASSWORD
+
     async with AsyncSessionLocal() as db:
         # --- Admin user ---
-        result = await db.execute(select(User).where(User.email == ADMIN_EMAIL))
+        result = await db.execute(select(User).where(User.email == admin_email))
         existing_admin = result.scalar_one_or_none()
 
         if not existing_admin:
             admin = User(
-                email=ADMIN_EMAIL,
-                hashed_password=make_hash(ADMIN_PASSWORD),
+                email=admin_email,
+                hashed_password=make_hash(admin_password),
                 full_name="Administrator",
                 role=UserRole.ADMIN,
                 is_active=True,
             )
             db.add(admin)
-            print(f"✅ Admin created: {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
+            print(f"✅ Admin created: {admin_email} / {admin_password}")
         else:
-            print(f"ℹ️  Admin already exists, skipping.")
+            # Always sync the password from .env so login works after password change
+            existing_admin.hashed_password = make_hash(admin_password)
+            existing_admin.is_active = True
+            print(f"✅ Admin password synced: {admin_email}")
 
         # --- Plans ---
         plans_data = [

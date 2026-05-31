@@ -78,7 +78,7 @@ class SubscriptionService:
             interval = "month" if plan.interval.value == "monthly" else "year"
             price = await self.stripe_service.create_price(
                 product_id=product.id,
-                unit_amount=int(plan.price * 100),  # Convert to cents
+                unit_amount=round(float(plan.price) * 100),  # Convert to cents (round avoids float precision: 9.99*100=998.999…)
                 currency=plan.currency,
                 interval=interval,
             )

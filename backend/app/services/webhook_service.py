@@ -254,8 +254,11 @@ class WebhookService:
         await self.db.commit()
         return invoice
 
-    async def _get_user_id_by_stripe_customer(self, customer_id: str) -> Optional[int]:
+    async def _get_user_id_by_stripe_customer(self, customer_id: Optional[str]) -> Optional[int]:
         """Find user ID by Stripe customer ID."""
+        # Guard: a None customer_id would match all users with stripe_customer_id IS NULL
+        if not customer_id:
+            return None
         from app.models.user import User
         result = await self.db.execute(
             select(User.id).where(User.stripe_customer_id == customer_id)

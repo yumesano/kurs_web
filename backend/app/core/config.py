@@ -41,11 +41,11 @@ class Settings(BaseSettings):
         raise ValueError(v)
 
     # Frontend URL
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str = "http://localhost:5173"
 
     # Admin
     FIRST_SUPERUSER_EMAIL: str = "admin@example.com"
-    FIRST_SUPERUSER_PASSWORD: str = "admin123"
+    FIRST_SUPERUSER_PASSWORD: str = "admin123456"
 
     # Logging
     LOG_LEVEL: str = "INFO"
