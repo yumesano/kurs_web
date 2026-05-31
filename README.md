@@ -38,8 +38,8 @@ API для управления подписками и платежами на 
 ### 1. Клонирование репозитория
 
 ```bash
-git clone https://github.com/arman-zakyan/stripe-subscription-api.git
-cd stripe-subscription-api
+git clone https://github.com/yumesano/kurs_web.git
+cd kurs_web
 ```
 
 ### 2. Конфигурация окружения
@@ -60,10 +60,10 @@ docker compose up --build
 
 | Сервис | URL |
 |--------|-----|
-| Frontend | http://localhost |
-| API (через nginx) | http://localhost/api/v1 |
-| Swagger UI | http://localhost/docs |
-| ReDoc | http://localhost/redoc |
+| Frontend | http://localhost:5173 |
+| API (через nginx) | http://localhost:8000/api/v1 |
+| Swagger UI | http://localhost:8000/docs |
+| ReDoc | http://localhost:8000/redoc |
 | Backend (прямой) | http://localhost:8000 |
 | Frontend (dev) | http://localhost:5173 |
 
