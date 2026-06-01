@@ -1,3 +1,4 @@
+import asyncio
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +12,34 @@ from app.models.user import User
 from app.schemas.payment import InvoiceResponse, PaymentResponse
 
 router = APIRouter()
+
+
+@router.post("/sync")
+async def sync_my_billing(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Синхронизировать инвойсы и платежи из Stripe напрямую.
+    Работает без Stripe CLI — достаточно наличия stripe_customer_id.
+    Таймаут 15 с на случай недоступности Stripe API."""
+    from app.services.webhook_service import WebhookService
+    webhook_service = WebhookService(db)
+    try:
+        result = await asyncio.wait_for(
+            webhook_service.sync_user_billing(current_user),
+            timeout=15.0,
+        )
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Stripe API не отвечает. Проверьте подключение к интернету.",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка синхронизации: {str(e)}",
+        )
 
 
 @router.get("/invoices", response_model=List[InvoiceResponse])

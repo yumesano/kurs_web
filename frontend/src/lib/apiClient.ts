@@ -7,6 +7,8 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // Global timeout: prevents infinite hangs when backend/Stripe is unreachable
+  timeout: 15000,
 })
 
 // Request interceptor — attach access token

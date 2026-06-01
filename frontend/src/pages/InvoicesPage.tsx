@@ -1,4 +1,5 @@
-import { useMyInvoices } from '../hooks/useApi'
+import { useEffect, useRef } from 'react'
+import { useMyInvoices, useSyncBilling } from '../hooks/useApi'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import StatusBadge from '../components/ui/StatusBadge'
 import { format } from 'date-fns'
@@ -6,15 +7,43 @@ import { ru } from 'date-fns/locale'
 
 export default function InvoicesPage() {
   const { data: invoices, isLoading } = useMyInvoices()
+  const syncBilling = useSyncBilling()
+  const syncCalledRef = useRef(false)
 
-  if (isLoading) return <LoadingSpinner />
+  // Sync from Stripe on every page visit (idempotent upsert on the backend).
+  // Works without Stripe CLI — uses stripe_customer_id directly.
+  useEffect(() => {
+    if (syncCalledRef.current) return
+    syncCalledRef.current = true
+    syncBilling.mutate()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Show spinner while initial data is loading OR while the first sync is running
+  const isSyncing = syncBilling.isPending
+  if (isLoading || (isSyncing && !invoices?.length)) return <LoadingSpinner />
 
   return (
     <div>
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Инвойсы</h1>
-        <p className="text-gray-500 mt-1">Все счета на оплату</p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Инвойсы</h1>
+          <p className="text-gray-500 mt-1">Все счета на оплату</p>
+        </div>
+        {/* Subtle sync indicator when background refresh is happening */}
+        {isSyncing && (
+          <span className="text-xs text-gray-400 flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            Обновление…
+          </span>
+        )}
       </div>
+
+      {/* Error from sync (e.g. Stripe unreachable) */}
+      {syncBilling.isError && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-6 text-sm text-yellow-800">
+          Не удалось синхронизировать данные со Stripe. Показаны сохранённые данные.
+        </div>
+      )}
 
       {invoices?.length === 0 ? (
         <div className="text-center py-16 text-gray-400">Инвойсов пока нет</div>
@@ -44,9 +73,7 @@ export default function InvoicesPage() {
                         {' — '}
                         {format(new Date(invoice.period_end), 'dd.MM.yyyy')}
                       </>
-                    ) : (
-                      '—'
-                    )}
+                    ) : '—'}
                   </td>
                   <td className="px-6 py-4 font-semibold text-gray-900">
                     ${invoice.amount_due.toFixed(2)}

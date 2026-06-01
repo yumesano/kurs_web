@@ -1,3 +1,4 @@
+import asyncio
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +12,7 @@ from app.schemas.subscription import (
     SubscriptionCancelResponse,
     SubscriptionCreate,
     SubscriptionResponse,
+    SyncCheckoutRequest,
 )
 from app.services.plan_service import PlanService
 from app.services.subscription_service import SubscriptionService
@@ -55,6 +57,34 @@ async def create_checkout_session(
         )
 
     return await sub_service.create_checkout_session(current_user, plan, data)
+
+
+@router.post("/sync-checkout", response_model=SubscriptionResponse)
+async def sync_from_checkout(
+    data: SyncCheckoutRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Синхронизировать подписку из Stripe по session_id.
+    Резервный метод — работает даже без вебхуков.
+    Таймаут 8 с: если Stripe API не отвечает — возвращает 504."""
+    sub_service = SubscriptionService(db)
+    try:
+        subscription = await asyncio.wait_for(
+            sub_service.sync_from_checkout_session(current_user, data.session_id),
+            timeout=8.0,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Stripe API не отвечает. Проверьте подключение к интернету.",
+        )
+    if not subscription:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Сессия оплаты не найдена или платёж не завершён",
+        )
+    return subscription
 
 
 # Static admin route must be declared BEFORE the parameterized /{subscription_id}

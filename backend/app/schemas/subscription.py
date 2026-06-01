@@ -11,6 +11,10 @@ class SubscriptionCreate(BaseModel):
     plan_id: int
 
 
+class SyncCheckoutRequest(BaseModel):
+    session_id: str
+
+
 class SubscriptionResponse(BaseModel):
     id: int
     user_id: int

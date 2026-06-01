@@ -1,4 +1,5 @@
-import { useMyPayments } from '../hooks/useApi'
+import { useEffect, useRef } from 'react'
+import { useMyPayments, useSyncBilling } from '../hooks/useApi'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import StatusBadge from '../components/ui/StatusBadge'
 import { format } from 'date-fns'
@@ -6,8 +7,18 @@ import { ru } from 'date-fns/locale'
 
 export default function PaymentsPage() {
   const { data: payments, isLoading } = useMyPayments()
+  const syncBilling = useSyncBilling()
+  const syncCalledRef = useRef(false)
 
-  if (isLoading) return <LoadingSpinner />
+  // Sync from Stripe on every page visit (idempotent upsert on the backend).
+  useEffect(() => {
+    if (syncCalledRef.current) return
+    syncCalledRef.current = true
+    syncBilling.mutate()
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isSyncing = syncBilling.isPending
+  if (isLoading || (isSyncing && !payments?.length)) return <LoadingSpinner />
 
   const totalSucceeded =
     payments
@@ -16,12 +27,27 @@ export default function PaymentsPage() {
 
   return (
     <div>
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">История платежей</h1>
-        <p className="text-gray-500 mt-1">Все транзакции по вашему аккаунту</p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">История платежей</h1>
+          <p className="text-gray-500 mt-1">Все транзакции по вашему аккаунту</p>
+        </div>
+        {isSyncing && (
+          <span className="text-xs text-gray-400 flex items-center gap-1.5">
+            <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+            Обновление…
+          </span>
+        )}
       </div>
 
-      {/* Summary */}
+      {/* Error from sync */}
+      {syncBilling.isError && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-6 text-sm text-yellow-800">
+          Не удалось синхронизировать данные со Stripe. Показаны сохранённые данные.
+        </div>
+      )}
+
+      {/* Summary cards */}
       {(payments?.length ?? 0) > 0 && (
         <div className="grid grid-cols-3 gap-4 mb-6">
           <div className="card">

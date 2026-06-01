@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment import Payment, PaymentStatus
 from app.models.subscription import Subscription, SubscriptionStatus
+from app.models.user import User
 from app.models.webhook_event import WebhookEvent
 from app.services.subscription_service import SubscriptionService
 
@@ -253,6 +254,67 @@ class WebhookService:
 
         await self.db.commit()
         return invoice
+
+    async def sync_user_billing(self, user: User) -> dict:
+        """Fetch invoices and payments from Stripe and upsert to local DB.
+        Fallback for when webhooks are not configured (no Stripe CLI)."""
+        if not user.stripe_customer_id:
+            return {"invoices": 0, "payments": 0}
+
+        stripe_invoices = await stripe.Invoice.list_async(
+            customer=user.stripe_customer_id,
+            limit=50,
+        )
+
+        inv_status_map = {
+            "draft":         InvoiceStatus.DRAFT,
+            "open":          InvoiceStatus.OPEN,
+            "paid":          InvoiceStatus.PAID,
+            "uncollectible": InvoiceStatus.UNCOLLECTIBLE,
+            "void":          InvoiceStatus.VOID,
+        }
+
+        invoice_count = 0
+        payment_count = 0
+
+        for stripe_inv in stripe_invoices.data:
+            stripe_status = stripe_inv.get("status", "draft")
+            inv_status = inv_status_map.get(stripe_status, InvoiceStatus.DRAFT)
+
+            invoice = await self._upsert_invoice(stripe_inv, inv_status)
+            if invoice:
+                invoice_count += 1
+
+            # Create Payment record for every paid invoice
+            if inv_status == InvoiceStatus.PAID:
+                pi_id = stripe_inv.get("payment_intent")
+                # payment_intent may be an expanded object or a plain string ID
+                if isinstance(pi_id, dict):
+                    pi_id = pi_id.get("id")
+                if pi_id:
+                    result = await self.db.execute(
+                        select(Payment).where(Payment.stripe_payment_intent_id == pi_id)
+                    )
+                    if not result.scalar_one_or_none() and invoice:
+                        payment = Payment(
+                            user_id=user.id,
+                            invoice_id=invoice.id,
+                            stripe_payment_intent_id=pi_id,
+                            amount=stripe_inv.get("amount_paid", 0) / 100,
+                            currency=stripe_inv.get("currency", "usd"),
+                            status=PaymentStatus.SUCCEEDED,
+                            payment_method="card",
+                            paid_at=datetime.now(timezone.utc),
+                        )
+                        self.db.add(payment)
+                        await self.db.commit()
+                        payment_count += 1
+
+        logger.info(
+            f"Billing sync for user {user.id}: "
+            f"{invoice_count} invoices, {payment_count} payments"
+        )
+        return {"invoices": invoice_count, "payments": payment_count}
 
     async def _get_user_id_by_stripe_customer(self, customer_id: Optional[str]) -> Optional[int]:
         """Find user ID by Stripe customer ID."""

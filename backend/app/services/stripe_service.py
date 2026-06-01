@@ -134,6 +134,18 @@ class StripeService:
             logger.error(f"Failed to resume subscription: {e}")
             raise
 
+    async def retrieve_checkout_session(
+        self, session_id: str
+    ) -> Optional[stripe.checkout.Session]:
+        """Retrieve a Stripe Checkout Session by ID."""
+        try:
+            return await stripe.checkout.Session.retrieve_async(session_id)
+        except stripe.InvalidRequestError:
+            return None
+        except stripe.StripeError as e:
+            logger.error(f"Failed to retrieve checkout session {session_id}: {e}")
+            return None
+
     async def get_subscription(self, stripe_subscription_id: str) -> Optional[stripe.Subscription]:
         """Retrieve a Stripe subscription."""
         try:

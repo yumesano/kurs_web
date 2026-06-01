@@ -1,85 +1,123 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
-import { useMySubscriptions } from '../hooks/useApi'
+import { useSyncCheckout, useMySubscriptions } from '../hooks/useApi'
 import { Subscription } from '../types'
 import { format } from 'date-fns'
 import { ru } from 'date-fns/locale'
 
-const MAX_ATTEMPTS = 15   // 15 × 2 с = 30 секунд
-const POLL_INTERVAL = 2000
+// Fallback polling — kicks in only if the direct sync also fails
+const MAX_POLL_ATTEMPTS = 10   // 10 × 2 с = 20 секунд
+const POLL_INTERVAL     = 2000
+
+type Phase = 'syncing' | 'polling' | 'done' | 'timeout'
+
+function Spinner() {
+  return (
+    <div className="flex items-center justify-center min-h-[60vh]">
+      <div className="text-center">
+        <div className="inline-block w-14 h-14 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-6" />
+        <p className="text-gray-600 text-lg font-medium">Подтверждаем оплату…</p>
+        <p className="text-gray-400 text-sm mt-2">
+          Обрабатываем уведомление от Stripe, подождите несколько секунд
+        </p>
+      </div>
+    </div>
+  )
+}
 
 export default function SuccessPage() {
   const [searchParams] = useSearchParams()
   const sessionId = searchParams.get('session_id')
-  const qc = useQueryClient()
+
+  const syncCheckout  = useSyncCheckout()
+  const syncCalledRef = useRef(false)   // prevent double-call in React Strict Mode
 
   const [activeSub, setActiveSub] = useState<Subscription | null>(null)
-  const [polling, setPolling]     = useState(true)
-  const [timedOut, setTimedOut]   = useState(false)
-  // useState (не useRef!): изменение счётчика вызывает ре-рендер →
-  // эффект перезапускается → проверка MAX_ATTEMPTS гарантированно выполняется,
-  // даже если данные подписки не изменились между запросами.
+  const [phase, setPhase]         = useState<Phase>('syncing')
   const [attempts, setAttempts]   = useState(0)
 
   const { data: subscriptions, refetch } = useMySubscriptions()
 
-  // При первом рендере сбрасываем кеш, чтобы подтянуть актуальные данные
+  // ── Safety net: if syncing phase lasts more than 10 s, force polling ──
+  // Covers the case when StrictMode double-invoke skips the mutation call
+  // or the backend itself hangs beyond the 8-second asyncio timeout.
   useEffect(() => {
-    qc.invalidateQueries({ queryKey: ['subscriptions'] })
-    qc.invalidateQueries({ queryKey: ['payments'] })
-    qc.invalidateQueries({ queryKey: ['invoices'] })
-  }, [qc])
+    if (phase !== 'syncing') return
+    const id = setTimeout(() => setPhase('polling'), 10000)
+    return () => clearTimeout(id)
+  }, [phase])
 
-  // Поллинг: ждём появления активной подписки (вебхук может прийти с задержкой)
+  // ── Phase 1: direct sync via session_id ───────────────────────────────
+  // This works even without webhooks: we call Stripe directly to get the
+  // checkout session, verify payment_status === "paid", then activate the
+  // local subscription. Fast path: resolves in ~1 second.
   useEffect(() => {
-    if (!polling) return
+    if (syncCalledRef.current) return
+    syncCalledRef.current = true
 
-    const found = subscriptions?.find((s) => s.status === 'active' || s.status === 'trialing')
-    if (found) {
-      setActiveSub(found)
-      setPolling(false)
+    if (!sessionId) {
+      // No session_id in URL — skip sync, go to polling fallback
+      setPhase('polling')
       return
     }
 
-    if (attempts >= MAX_ATTEMPTS) {
-      setPolling(false)
-      setTimedOut(true)
+    syncCheckout.mutate(sessionId, {
+      onSuccess: (sub) => {
+        setActiveSub(sub)
+        setPhase('done')
+      },
+      onError: () => {
+        // Sync failed (payment pending / Stripe key not configured)
+        // — fall back to webhook-based polling
+        setPhase('polling')
+      },
+    })
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps — intentionally run once
+
+  // ── Phase 2: fallback polling (webhook-based path) ────────────────────
+  // Runs only when Phase 1 fails. Checks every 2 s whether the webhook
+  // has updated the subscription status to active/trialing.
+  useEffect(() => {
+    if (phase !== 'polling') return
+
+    const found = subscriptions?.find(
+      (s) => s.status === 'active' || s.status === 'trialing'
+    )
+    if (found) {
+      setActiveSub(found)
+      setPhase('done')
+      return
+    }
+
+    if (attempts >= MAX_POLL_ATTEMPTS) {
+      setPhase('timeout')
       return
     }
 
     const timer = setTimeout(() => {
-      setAttempts((a) => a + 1)  // useState → вызывает ре-рендер → эффект перезапустится
+      setAttempts((a) => a + 1) // useState → triggers re-render → effect re-runs
       refetch()
     }, POLL_INTERVAL)
 
     return () => clearTimeout(timer)
-  }, [subscriptions, polling, refetch, attempts])
+  }, [subscriptions, phase, refetch, attempts])
 
-  /* ── Спиннер ожидания ─────────────────────────────────────────────── */
-  if (polling) {
-    return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="text-center">
-          <div className="inline-block w-14 h-14 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-6" />
-          <p className="text-gray-600 text-lg font-medium">Подтверждаем оплату…</p>
-          <p className="text-gray-400 text-sm mt-2">
-            Обрабатываем уведомление от Stripe, подождите несколько секунд
-          </p>
-        </div>
-      </div>
-    )
-  }
+  // ── Loading states ─────────────────────────────────────────────────────
+  if (phase === 'syncing' || phase === 'polling') return <Spinner />
 
-  /* ── Основной экран успеха ────────────────────────────────────────── */
+  // ── Success / Timeout screen ───────────────────────────────────────────
   return (
     <div className="flex items-center justify-center min-h-[60vh] px-4">
       <div className="w-full max-w-lg">
 
-        {/* Иконка + заголовок */}
+        {/* Header */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-green-100 mb-6">
-            <svg className="w-10 h-10 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg
+              className="w-10 h-10 text-green-600"
+              fill="none" viewBox="0 0 24 24"
+              stroke="currentColor" strokeWidth={2}
+            >
               <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
             </svg>
           </div>
@@ -87,28 +125,28 @@ export default function SuccessPage() {
             Оплата прошла успешно!
           </h1>
           <p className="text-gray-500">
-            {timedOut
-              ? 'Платёж принят. Подписка будет активирована в течение нескольких секунд.'
+            {phase === 'timeout'
+              ? 'Платёж принят. Подписка активируется в течение нескольких секунд.'
               : 'Ваша подписка активирована. Добро пожаловать!'}
           </p>
         </div>
 
-        {/* Карточка с деталями подписки */}
+        {/* Subscription details card */}
         {activeSub ? (
           <div className="card mb-6">
             <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">
               Детали подписки
             </h2>
-            <div className="space-y-3">
+            <div className="space-y-0">
 
-              <div className="flex items-center justify-between py-2 border-b border-gray-100">
+              <div className="flex items-center justify-between py-3 border-b border-gray-100">
                 <span className="text-gray-500 text-sm">Тарифный план</span>
                 <span className="font-semibold text-gray-900">
                   {activeSub.plan?.name ?? `#${activeSub.id}`}
                 </span>
               </div>
 
-              <div className="flex items-center justify-between py-2 border-b border-gray-100">
+              <div className="flex items-center justify-between py-3 border-b border-gray-100">
                 <span className="text-gray-500 text-sm">Стоимость</span>
                 <span className="font-semibold text-gray-900">
                   ${activeSub.plan?.price}
@@ -118,7 +156,7 @@ export default function SuccessPage() {
                 </span>
               </div>
 
-              <div className="flex items-center justify-between py-2 border-b border-gray-100">
+              <div className="flex items-center justify-between py-3 border-b border-gray-100">
                 <span className="text-gray-500 text-sm">Статус</span>
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
@@ -127,7 +165,7 @@ export default function SuccessPage() {
               </div>
 
               {activeSub.current_period_start && (
-                <div className="flex items-center justify-between py-2 border-b border-gray-100">
+                <div className="flex items-center justify-between py-3 border-b border-gray-100">
                   <span className="text-gray-500 text-sm">Начало периода</span>
                   <span className="font-medium text-gray-900">
                     {format(new Date(activeSub.current_period_start), 'dd MMMM yyyy', { locale: ru })}
@@ -136,7 +174,7 @@ export default function SuccessPage() {
               )}
 
               {activeSub.current_period_end && (
-                <div className="flex items-center justify-between py-2">
+                <div className="flex items-center justify-between py-3">
                   <span className="text-gray-500 text-sm">Следующее списание</span>
                   <span className="font-medium text-gray-900">
                     {format(new Date(activeSub.current_period_end), 'dd MMMM yyyy', { locale: ru })}
@@ -146,11 +184,16 @@ export default function SuccessPage() {
 
             </div>
           </div>
-        ) : timedOut ? (
+        ) : (
+          /* Timeout: no subscription details available */
           <div className="card mb-6 bg-yellow-50 border-yellow-200">
             <div className="flex gap-3">
-              <svg className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              <svg
+                className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5"
+                fill="none" viewBox="0 0 24 24" stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p className="text-sm text-yellow-800">
                 Платёж принят, но подтверждение ещё обрабатывается. Обновите страницу
@@ -158,19 +201,19 @@ export default function SuccessPage() {
               </p>
             </div>
           </div>
-        ) : null}
+        )}
 
-        {/* Session ID (для отчётности) */}
+        {/* Session ID */}
         {sessionId && (
           <div className="bg-gray-50 rounded-lg p-3 mb-6">
             <p className="text-xs text-gray-400 font-mono break-all">
-              <span className="text-gray-500 font-sans">Session ID: </span>
+              <span className="text-gray-500 font-sans not-italic">Session ID: </span>
               {sessionId}
             </p>
           </div>
         )}
 
-        {/* Кнопки навигации */}
+        {/* Navigation */}
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <Link to="/dashboard" className="btn-primary text-center">
             На главную

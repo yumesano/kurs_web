@@ -79,6 +79,23 @@ export function useCreateCheckout() {
   })
 }
 
+export function useSyncCheckout() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const { data } = await apiClient.post('/subscriptions/sync-checkout', {
+        session_id: sessionId,
+      })
+      return data as Subscription
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['subscriptions'] })
+      qc.invalidateQueries({ queryKey: ['invoices'] })
+      qc.invalidateQueries({ queryKey: ['payments'] })
+    },
+  })
+}
+
 export function useCancelSubscription() {
   const qc = useQueryClient()
   return useMutation({
@@ -89,6 +106,21 @@ export function useCancelSubscription() {
       return data
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['subscriptions'] }),
+  })
+}
+
+// ── Billing sync (fallback without Stripe CLI) ────────────────────────────
+export function useSyncBilling() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await apiClient.post('/billing/sync')
+      return data as { invoices: number; payments: number }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['invoices'] })
+      qc.invalidateQueries({ queryKey: ['payments'] })
+    },
   })
 }
 

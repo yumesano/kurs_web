@@ -115,6 +115,53 @@ class SubscriptionService:
             session_id=session.id,
         )
 
+    async def sync_from_checkout_session(
+        self, user: User, session_id: str
+    ) -> Optional[Subscription]:
+        """Fallback sync: fetch Stripe checkout session and update local subscription.
+        Handles the case when the webhook was delayed or never arrived."""
+        session = await self.stripe_service.retrieve_checkout_session(session_id)
+        if not session:
+            return None
+
+        # Only process sessions where payment was actually collected
+        if session.get("payment_status") != "paid":
+            return None
+
+        subscription_id_str = (session.get("metadata") or {}).get("subscription_id")
+        stripe_subscription_id = session.get("subscription")
+
+        if not subscription_id_str or not stripe_subscription_id:
+            return None
+
+        try:
+            subscription_id = int(subscription_id_str)
+        except (ValueError, TypeError):
+            return None
+
+        result = await self.db.execute(
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(
+                Subscription.id == subscription_id,
+                Subscription.user_id == user.id,   # security: own subscription only
+            )
+        )
+        subscription = result.scalar_one_or_none()
+        if not subscription:
+            return None
+
+        # Already in an active state — just return it
+        if subscription.status in (SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING):
+            return subscription
+
+        # Retrieve the Stripe subscription and sync local record
+        stripe_sub = await self.stripe_service.get_subscription(stripe_subscription_id)
+        if not stripe_sub:
+            return None
+
+        return await self.update_from_stripe(subscription, stripe_sub)
+
     async def cancel_subscription(self, subscription: Subscription) -> Subscription:
         """Cancel a subscription at period end."""
         if subscription.stripe_subscription_id:
