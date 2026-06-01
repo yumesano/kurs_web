@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useMySubscriptions } from '../hooks/useApi'
@@ -14,10 +14,13 @@ export default function SuccessPage() {
   const sessionId = searchParams.get('session_id')
   const qc = useQueryClient()
 
-  const [activeSub, setActiveSub]   = useState<Subscription | null>(null)
-  const [polling, setPolling]       = useState(true)
-  const [timedOut, setTimedOut]     = useState(false)
-  const attempts = useRef(0)
+  const [activeSub, setActiveSub] = useState<Subscription | null>(null)
+  const [polling, setPolling]     = useState(true)
+  const [timedOut, setTimedOut]   = useState(false)
+  // useState (не useRef!): изменение счётчика вызывает ре-рендер →
+  // эффект перезапускается → проверка MAX_ATTEMPTS гарантированно выполняется,
+  // даже если данные подписки не изменились между запросами.
+  const [attempts, setAttempts]   = useState(0)
 
   const { data: subscriptions, refetch } = useMySubscriptions()
 
@@ -39,19 +42,19 @@ export default function SuccessPage() {
       return
     }
 
-    if (attempts.current >= MAX_ATTEMPTS) {
+    if (attempts >= MAX_ATTEMPTS) {
       setPolling(false)
       setTimedOut(true)
       return
     }
 
     const timer = setTimeout(() => {
-      attempts.current += 1
+      setAttempts((a) => a + 1)  // useState → вызывает ре-рендер → эффект перезапустится
       refetch()
     }, POLL_INTERVAL)
 
     return () => clearTimeout(timer)
-  }, [subscriptions, polling, refetch])
+  }, [subscriptions, polling, refetch, attempts])
 
   /* ── Спиннер ожидания ─────────────────────────────────────────────── */
   if (polling) {
